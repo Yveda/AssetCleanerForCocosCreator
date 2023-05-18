@@ -23,48 +23,82 @@ let ResExt = [
 ];
 
 let AssetCleaner = {
-    sourceMap: null,
-    destMap: null,
-    handleMap: null,
-    resourcesDir: 'resources',
+    sourceMap: null,//被引用的源文件列表， Map<{path, {uuid: uuid数组, type, size, name}}>, 含有预制体、动画、jpg、png、webp
+    destMap: null,// 用于引用别的文件的大文件， Map<path, {data：文件字符串数据}>, 含有骨骼、脚本、预制体、动画、场景（这里简称大文件，意思就是会引用到其他小文件的资源文件）
+    handleMap: null,// 图片处理过的文件列表, Map<path, {handle：boolean}>记录图片是否已经处理过
+    resourcesDir: 'resources',//资源目录路径
 
+    /**
+     * 开始清理
+     * @param {string} sourceFile 源文件路径
+     * @param {string} destFile 目标文件路径
+     */
     start(sourceFile, destFile) {
+        // 检查参数是否合法
         if (!sourceFile || sourceFile.length <= 0 || !destFile || destFile.length <= 0) {
             console.error('Cleaner: invalid source or dest');
             return;
         }
 
-        this.sourceMap = new Map();
-        this.destMap = new Map();
-        this.handleMap = new Map();
-        this.resourcesDir = path.join('/', this.resourcesDir, '/');
+        // 初始化
+        this.sourceMap = new Map(); 
+        this.destMap = new Map(); 
+        this.handleMap = new Map(); 
+        this.resourcesDir = path.join('/', this.resourcesDir, '/'); 
 
+        // 获取源文件和目标文件的绝对路径
         sourceFile = FileHelper.getFullPath(sourceFile);
         destFile = FileHelper.getFullPath(destFile);
 
+        console.log("###sourceFile", sourceFile);
+        console.log("###destFile", destFile);
+
+        // 查找源文件中的所有资源文件
         this.lookupAssetDir(sourceFile);
+
+        console.log("###sourceMap", this.sourceMap.size)
+        
+        console.log("###destMap", this.destMap.size)
+
+        // 比较源文件和目标文件中的资源文件，获取未被引用的文件列表和非动态调用的文件列表
         let { noBindMap, noLoadMap } = this.compareAssets();
+
+        // 生成未被引用的文件列表和非动态调用的文件列表
         let outStr1 = '未引用文件数量=';
         outStr1 = this.getSortedResult(outStr1, noBindMap, sourceFile, global._delete);
         let outStr2 = '非动态调用(无需放在resources下)文件数量=';
         outStr2 = this.getSortedResult(outStr2, noLoadMap, sourceFile);
+
+        // 将未被引用的文件列表和非动态调用的文件列表合并，并写入目标文件
         let outStr = outStr1 + '\n' + outStr2;
         FileHelper.writeFile(destFile, outStr);
+
+        // console.log("###handleMap", this.handleMap);
     },
 
+
+    /**
+     * 查找源文件中的所有资源文件
+     *
+     * @param {*} outStr 输出内容
+     * @param {*} outMap 输出文件列表Map<type, {path, size}>, 即Map<资源类型, {路径, 资源大小}>, 
+     * @param {*} srcDir 源文件目录
+     * @param {*} isDelete 是否删除
+     */
     getSortedResult(outStr, outMap, srcDir, isDelete) {
-        let totalCount = 0;
-        let totalSize = 0;
-        let content = '';
-        const exclude = global._excludes && new RegExp(global._excludes, 'gi')
-        let fileCount = 0;
-        let metaFileCount = 0;
-        let cleanContent = '';
-        let cleanFlag = false
+        let totalCount = 0; // 文件总数
+        let totalSize = 0; // 文件总大小
+        let content = ''; // 输出内容
+        const exclude = global._excludes && new RegExp(global._excludes, 'gi') // 排除文件正则表达式
+        let fileCount = 0; // 删除文件数量
+        let metaFileCount = 0; // 删除meta文件数量
+        let cleanContent = ''; // 删除日志内容
+        let cleanFlag = false // 是否已经生成删除日志
+        
         /**
          * 清除所有无用资源后生成删除日志
          */
-        const fileCountHandle = FileHelper.debounce(() => {
+        const fileCountHandle = FileHelper.debounce(() => { // 防抖函数，避免频繁写入文件
             const printText = `共删除${fileCount}个原始资源\n`
             cleanContent = printText + cleanContent
             if (cleanFlag) {
@@ -73,7 +107,9 @@ let AssetCleaner = {
                 cleanFlag = true
             }
         })
-        const metaFileCountHandle = FileHelper.debounce(() => {
+
+        
+        const metaFileCountHandle = FileHelper.debounce(() => { // 防抖函数，避免频繁写入文件
             const printText = `共删除${metaFileCount}个meta资源\n`
             cleanContent = printText + cleanContent
             if (cleanFlag) {
@@ -82,31 +118,32 @@ let AssetCleaner = {
                 cleanFlag = true
             }
         })
-        for (let [type, files] of outMap.entries()) {
-            if (files.length <= 0) {
+
+        for (let [type, files] of outMap.entries()) { // 遍历文件列表
+            if (files.length <= 0) { // 如果文件列表为空则跳过
                 continue;
             }
     
             // 按从大到小排列
-            files.sort(function(a, b) {
+            files.sort(function(a, b) { // 根据文件大小排序
                 return b.size - a.size;
             });
     
-            for (let i = 0, len = files.length; i < len; i++) {
+            for (let i = 0, len = files.length; i < len; i++) { // 遍历文件列表
                 let file = files[i];
-                content += '空间=' + Utils.byte2KbStr(file.size) + 'KB, 文件=' + file.path + '\n';
-                totalSize += file.size;
-                const isExcludes = exclude && file.path.search(exclude) !== -1
-                const isResourcesDir = file.path.includes(this.resourcesDir)
+                content += '空间=' + Utils.byte2KbStr(file.size) + 'KB, 文件=' + file.path + '\n'; // 输出文件信息
+                totalSize += file.size; // 计算文件总大小
+                const isExcludes = exclude && file.path.search(exclude) !== -1 // 判断是否为排除文件
+                const isResourcesDir = file.path.includes(this.resourcesDir) // 判断是否为资源目录下的文件
                 // 有删除参数（-d）时，非resources目录，非排除类文件，会自动删除
-                if (isDelete && !isResourcesDir && !isExcludes) {
-                    fs.unlink(file.path, err => {
+                if (isDelete && !isResourcesDir && !isExcludes) { // 如果有删除参数且不是资源目录下的文件且不是排除类文件，则删除文件
+                    fs.unlink(file.path, err => { // 删除文件
                         if (err) return console.error(err.message);
                         cleanContent += file.path + '\n'
                         fileCount++;
                         fileCountHandle();
                     })
-                    fs.unlink(file.path + '.meta', err => {
+                    fs.unlink(file.path + '.meta', err => { // 删除meta文件
                         if (err) return console.warn(err.message);
                         cleanContent += file.path + '.meta\n'
                         metaFileCount++;
@@ -128,30 +165,34 @@ let AssetCleaner = {
         return outStr;
     },
 
-    // UUID和文件逐个比较，返回结果汇总
+
+    /**
+     * 源文件(小文件)和目标文件(大文件)逐个比较，返回引用结果
+     *
+     * @return {*} 
+     */
     compareAssets() {
-        let noBindMap = new Map();
-        let noLoadMap = new Map();
+        let noBindMap = new Map();// 未被引用资源Map<ResType, [path: string, size: number]>, 资源类型
+        let noLoadMap = new Map();// 非动态加载资源
         
         // 如果源UUID在所有目标资源都未找到，则说明源UUID对应的文件未被引用
         for (let [srcPath, srcData] of this.sourceMap.entries()) {
-            let isBind = false;
-            let isCodeLoad = false;
-            let bDynamic = (srcPath.indexOf(this.resourcesDir) >= 0);
-            
-            isBind = this.findAssetByUUID(srcPath, srcData);
+            let isBind = this.findAssetByUUID(srcPath, srcData);;//源文件是否被大文件引用
+
+            let bDynamic = (srcPath.indexOf(this.resourcesDir) >= 0);// 是否为动态资源，即在resources下
+            let isCodeLoad = false;// 资源是否是否被动态加载            
             if (bDynamic) {
                 isCodeLoad = this.findAssetByName(srcPath, srcData);
             }
 
-            if (!isBind && !isCodeLoad) {
+            if (!isBind && !isCodeLoad) {//如果没有被大文件引用，且没有代码去动态加载，则加入未被引用map
                 let files = noBindMap.get(srcData.type);
                 if (!files) {
                     files = [];
                     noBindMap.set(srcData.type, files);
                 }
                 files.push({ path:srcPath, size:srcData.size });
-            } else if (bDynamic && isBind && !isCodeLoad) {
+            } else if (bDynamic && isBind && !isCodeLoad) {  // 如果是resources下的动态资源，且被绑定但未被动态加载，则加入未被动态加载列表
                 let files = noLoadMap.get(srcData.type);
                 if (!files) {
                     files = [];
@@ -161,19 +202,59 @@ let AssetCleaner = {
             }
         }
 
-        return { noBindMap, noLoadMap };
-    },
+        // console.log("###未被引用资源noBindMap", noBindMap, "resources下未被引用的资源noLoadMap", noLoadMap);
 
-    // 根据源UUID在目标资源中查找
+        return { noBindMap, noLoadMap };
+
+        //noBindMap例子{
+        //     3 => [
+        //         {
+        //             path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\animation\\loading.anim',
+        //             size: 6334
+        //         },
+        //         {
+        //             path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\effect\\jetFires\\jetFiresAni2.anim',
+        //             size: 5517
+        //         },
+        //         {
+        //             path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\model\\scene\\skyBoxTex\\skyBox.anim',
+        //             size: 5554
+        //         }
+        //     ],
+        //         5 => [
+        //             {
+        //                 path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\effect\\arrow\\arrow.prefab',
+        //                 size: 7818
+        //             },
+        //             {
+        //                 path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\effect\\arrow\\arrowAll.prefab',
+        //                 size: 56190
+        //             },
+        //             {
+        //                 path: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\effect\\arrow\\arrowFire.prefab',
+        //                 size: 20449
+        //             },
+        //         ]
+        //     }
+    },
+    
+    /**
+     * 查找一下源文件是否被引用了
+     * @param {string} srcPath - 源文件路径
+     * @param {object} srcData - 源文件数据
+     * @returns {boolean} - 是否在目标资源中找到源UUID
+     */
     findAssetByUUID(srcPath, srcData) {
         let bFound = false;
         if (!srcPath || !srcData) {
             return bFound;
         }
         for (let [destPath, destData] of this.destMap.entries()) {
+            // 如果源文件路径和目标文件路径相同，或者目标文件类型为代码文件，则跳过
             if (srcPath == destPath || ResType.Code === destData.type) {
                 continue;
             }
+
             if (!!srcData && !!srcData.uuid) {  
                 for (let i = 0, len = srcData.uuid.length; i < len; i++) {
                     let uuid = srcData.uuid[i];
@@ -187,10 +268,17 @@ let AssetCleaner = {
         return bFound;
     },
 
-    // 根据源文件名在目标资源中查找
-    // 主要是搜索代码中动态调用的.prefab、.anim
+
+    /**
+     * 查找脚本中动态加载的.prefab、.anim
+     * （个人觉得这个很容易漏掉）
+     *
+     * @param {*} srcPath
+     * @param {*} srcData
+     * @return {*} 
+     */
     findAssetByName(srcPath, srcData) {
-        let bFound = false;
+        let bFound = false;//是否在目标资源中找到源文件名
         if (!srcPath || !srcData) {
             return bFound;
         }
@@ -201,6 +289,7 @@ let AssetCleaner = {
             }
             if (!!srcData && !!srcData.name && srcData.name.length > 0) {
                 if (destData.data.indexOf(srcData.name) >= 0) {
+                    console.log("####findAssetByName", srcData.name, " 路径 ", destPath)
                     bFound = true;
                     break;
                 }
@@ -219,7 +308,7 @@ let AssetCleaner = {
         let files = fs.readdirSync(srcDir);
         for (let i = 0, len = files.length; i < len; i++) {
             let file = files[i];
-            let curPath = path.join(srcDir, file);
+            let curPath = path.join(srcDir, file);//如：D:\PROJECT\yaji\archero\library\80\80aabd92-9942-4765-b685-8577a1c88b4e.jpg
 
             // 如果该文件已处理过则直接跳过
             if (this.handleMap.has(curPath)) {
@@ -234,6 +323,7 @@ let AssetCleaner = {
 
             let data = null;
             let uuid = [];
+            //路径解析：//如：{ root: 'D:\\', dir: 'D:\\PROJECT\\yaji\\archero\\library\\80', base: '80aabd92-9942-4765-b685-8577a1c88b4e.jpg', ext: '.jpg', name: '80aabd92-9942-4765-b685-8577a1c88b4e' }
             let pathObj = path.parse(curPath);
             // Sprine资源
             if (curPath.includes('.json.meta')) {
@@ -354,6 +444,23 @@ let AssetCleaner = {
     },
 
     // 返回不同类型文件的UUID
+
+    /**
+     * 获取文件的UUID数组
+     *
+     * @param {*} srcPath 资源路径
+     * @param {*} pathObj 资源路径对象{root, dir, base, ext, name}
+     * {
+     *      root: 'D:\\',
+            dir: 'D:\\PROJECT\\yaji\\archero\\assets\\res\\effect\\recovery',
+            base: 'recovery.prefab',
+            ext: '.prefab',
+            name: 'recovery'
+}
+     * }
+     * @param {*} type 资源类型， ResType
+     * @return {*} 
+     */
     getFileUUID(srcPath, pathObj, type) {
         let uuid = [];
         let destPath = '';
@@ -366,6 +473,7 @@ let AssetCleaner = {
             case ResType.ImageAtlas:
                 destPath = path.join(pathObj.dir, pathObj.name) + '.plist.meta';
                 uuid = this.getPlistUUIDFromMeta(destPath);
+                console.log("scrPath", srcPath, "uuid", uuid);
                 break;
             case ResType.LabelAtlas:
                 destPath = path.join(pathObj.dir, pathObj.name) + '.labelatlas.meta';
@@ -389,6 +497,7 @@ let AssetCleaner = {
             default:
                 break;
         }
+
         return uuid;
     },
 
